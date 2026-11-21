@@ -514,9 +514,20 @@ get_millis:
     move $v0, $a0           # Pega low bytes do tempo
     jr $ra
 
-# get_keypad_mock(): Retorna 0 (nenhuma tecla) para não travar o loop
+# ---------------------------------------------------------
+# get_keypad_mock(): Lê o teclado do PC pelo MMIO do MARS
+# ---------------------------------------------------------
 get_keypad_mock:
-    li $v0, 0
+    lui $t0, 0xffff          # Carrega o endereço base do MMIO (0xffff0000)
+    lw $t1, 0($t0)           # Lê o registrador de controle do teclado
+    andi $t1, $t1, 1         # Isola o bit 0 (Ready bit)
+    beqz $t1, sem_tecla      # Se for 0, nenhuma tecla foi apertada
+    
+    lw $v0, 4($t0)           # Se for 1, lê a tecla pressionada no registrador de dados (0xffff0004)
+    jr $ra                   # Retorna com a tecla em $v0
+
+sem_tecla:
+    li $v0, 0                # Nenhuma tecla
     jr $ra
 
 # mock_digitalRead(pin): Retorna 0 (LOW)
