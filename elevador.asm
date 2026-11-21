@@ -1,25 +1,12 @@
 .data
-    # -----------------------------------------------------------------
-    # ESTRUTURA CABIN (56 bytes)
-    # Offsets:
-    # 0: id (word)
-    # 4: current_floor (word)
-    # 8: state (word) -> 0: IDLE, 1: UP, 2: DOWN, 3: DOOR
-    # 12: timer (word)
-    # 16-32: active_requests (5 words, 20 bytes)
-    # 36-52: deferred_requests (5 words, 20 bytes)
-    # -----------------------------------------------------------------
-    
-    # Cabin 1
+    # Cabin struct (56 bytes):
+    # 0: id | 4: current_floor | 8: state (0:IDLE, 1:UP, 2:DOWN, 3:DOOR) | 12: timer
+    # 16..32: active_requests[5] | 36..52: deferred_requests[5]
     cabin1: .word 1, 0, 0, 0,  0,0,0,0,0,  0,0,0,0,0
-    
-    # Cabin 2
     cabin2: .word 2, 0, 0, 0,  0,0,0,0,0,  0,0,0,0,0
 
-    # Variável estática para scan_analog_buttons (last_read)
     last_read_analog: .word 0
 
-    # Strings Visor
     str_C: .asciiz "C"
     str_F: .asciiz "F"
     str_newline: .asciiz "\n"
@@ -27,9 +14,6 @@
 .text
 .globl main
 
-# ---------------------------------------------------------
-# SETUP & LOOP (Main)
-# ---------------------------------------------------------
 main:
     jal setup
 loop_infinito:
@@ -39,17 +23,15 @@ loop_infinito:
 setup:
     addi $sp, $sp, -4
     sw $ra, 0($sp)
-    
-    # send_update_to_visor(1, 0)
+
     li $a0, 1
     li $a1, 0
     jal send_update_to_visor
-    
-    # send_update_to_visor(2, 0)
+
     li $a0, 2
     li $a1, 0
     jal send_update_to_visor
-    
+
     lw $ra, 0($sp)
     addi $sp, $sp, 4
     jr $ra
@@ -57,34 +39,30 @@ setup:
 loop:
     addi $sp, $sp, -4
     sw $ra, 0($sp)
-    
+
     jal scan_keypads
     jal scan_analog_buttons
-    
+
     la $a0, cabin1
     jal update_cabin
-    
+
     la $a0, cabin2
     jal update_cabin
-    
+
     lw $ra, 0($sp)
     addi $sp, $sp, 4
     jr $ra
 
-# ---------------------------------------------------------
-# bool has_requests(bool req_array[5])
-# Argumento: $a0 = endereço base do array
-# Retorno: $v0 = 1 (true) ou 0 (false)
-# ---------------------------------------------------------
+# bool has_requests(int req_array[5]) -> $v0 = 1 | 0
 has_requests:
-    li $t0, 0               # i = 0
-    li $v0, 0               # return false
+    li $t0, 0
+    li $v0, 0
 hr_loop:
     bge $t0, 5, hr_end
-    sll $t1, $t0, 2         # i * 4
+    sll $t1, $t0, 2
     add $t2, $a0, $t1
     lw $t3, 0($t2)
-    bnez $t3, hr_true       # se != 0, return true
+    bnez $t3, hr_true
     addi $t0, $t0, 1
     j hr_loop
 hr_true:
@@ -92,10 +70,7 @@ hr_true:
 hr_end:
     jr $ra
 
-# ---------------------------------------------------------
-# void send_update_to_visor(byte cabin_id, int floor)
-# Argumentos: $a0 = id, $a1 = floor
-# ---------------------------------------------------------
+# void send_update_to_visor(int cabin_id, int floor)
 send_update_to_visor:
     addi $sp, $sp, -12
     sw $ra, 0($sp)
@@ -126,11 +101,11 @@ send_update_to_visor:
     addi $sp, $sp, 12
     jr $ra
 
-# ---------------------------------------------------------
 # void add_request(Cabin *cabin, int floor)
-# Argumentos: $a0 = cabin, $a1 = floor
-# ---------------------------------------------------------
 add_request:
+    bltz $a1, ar_early_ret
+    bge $a1, 5, ar_early_ret
+
     addi $sp, $sp, -16
     sw $ra, 0($sp)
     sw $a0, 4($sp)
@@ -139,7 +114,6 @@ add_request:
     lw $t0, 4($a0)          # current_floor
     lw $t1, 8($a0)          # state
 
-    # if floor == current_floor && (state == 0 || state == 3)
     bne $a1, $t0, ar_check_state
     beq $t1, 0, ar_set_door
     beq $t1, 3, ar_set_door
@@ -147,31 +121,36 @@ add_request:
 
 ar_set_door:
     li $t2, 3
-    sw $t2, 8($a0)          # state = ELEV_DOOR
+    sw $t2, 8($a0)          # state = DOOR
     jal get_millis
     lw $a0, 4($sp)
     sw $v0, 12($a0)         # timer = millis()
     j ar_end
 
 ar_check_state:
-    sll $t2, $a1, 2         # offset floor * 4
+    sll $t2, $a1, 2
     beq $t1, 0, ar_set_active
     beq $t1, 3, ar_set_active
-    beq $t1, 1, ar_set_deferred
-    
-    # se ELEV_DOWN (2)
+    beq $t1, 1, ar_check_up
+
+    # state == 2 (DOWN): atende se floor < current_floor
     bge $a1, $t0, ar_set_deferred
     j ar_set_active
 
+ar_check_up:
+    # state == 1 (UP): atende se floor > current_floor
+    ble $a1, $t0, ar_set_deferred
+    j ar_set_active
+
 ar_set_active:
-    addi $t3, $a0, 16       # active base
+    addi $t3, $a0, 16
     add $t4, $t3, $t2
     li $t5, 1
     sw $t5, 0($t4)
     j ar_end
 
 ar_set_deferred:
-    addi $t3, $a0, 36       # deferred base
+    addi $t3, $a0, 36
     add $t4, $t3, $t2
     li $t5, 1
     sw $t5, 0($t4)
@@ -179,58 +158,54 @@ ar_set_deferred:
 ar_end:
     lw $ra, 0($sp)
     addi $sp, $sp, 16
+ar_early_ret:
     jr $ra
 
-# ---------------------------------------------------------
-# int calc_effective_dist(Cabin *c)
-# Argumento: $a0 = cabin, Retorno: $v0 = dist
-# ---------------------------------------------------------
+# int calc_effective_dist(Cabin *c) -> $v0
 calc_effective_dist:
     lw $t0, 8($a0)          # state
     lw $t1, 4($a0)          # current_floor
-    
-    # if IDLE (0) ou DOWN (2), return current_floor
-    beq $t0, 0, ced_ret_current
-    beq $t0, 2, ced_ret_current
-    
+
+    # IDLE (0), DOWN (2) ou DOOR (3) retornam current_floor
+    bne $t0, 1, ced_ret_current
+
     move $t2, $t1           # highest_target = current_floor
     li $t3, 0               # i = 0
 ced_loop:
     bge $t3, 5, ced_calc
-    addi $t4, $a0, 16       # active_requests
+    addi $t4, $a0, 16
     sll $t5, $t3, 2
     add $t4, $t4, $t5
     lw $t6, 0($t4)
     beqz $t6, ced_next
-    move $t2, $t3           # highest = i
+    ble $t3, $t2, ced_next  # atualiza apenas se i > highest_target
+    move $t2, $t3
 ced_next:
     addi $t3, $t3, 1
     j ced_loop
 
 ced_calc:
-    sub $v0, $t2, $t1       # (highest - current) + highest
-    add $v0, $v0, $t2
+    subu $v0, $t2, $t1      # (highest - current) + highest
+    addu $v0, $v0, $t2
     jr $ra
 
 ced_ret_current:
     move $v0, $t1
     jr $ra
 
-# ---------------------------------------------------------
 # void call_ground_floor()
-# ---------------------------------------------------------
 call_ground_floor:
     addi $sp, $sp, -16
     sw $ra, 0($sp)
-    
+
     la $a0, cabin1
     jal calc_effective_dist
-    sw $v0, 4($sp)          # dist1
-    
+    sw $v0, 4($sp)
+
     la $a0, cabin2
     jal calc_effective_dist
-    sw $v0, 8($sp)          # dist2
-    
+    sw $v0, 8($sp)
+
     lw $t0, 4($sp)
     lw $t1, 8($sp)
     ble $t0, $t1, cgf_cab1
@@ -241,40 +216,37 @@ cgf_cab1:
 cgf_call:
     li $a1, 0
     jal add_request
-    
+
     lw $ra, 0($sp)
     addi $sp, $sp, 16
     jr $ra
 
-# ---------------------------------------------------------
 # void determine_next_state(Cabin *cabin)
-# Argumento: $a0 = cabin
-# ---------------------------------------------------------
 determine_next_state:
     addi $sp, $sp, -12
     sw $ra, 0($sp)
     sw $a0, 4($sp)
-    
-    addi $a0, $a0, 16       # active_requests addr
+
+    addi $a0, $a0, 16
     jal has_requests
-    lw $a0, 4($sp)          # restore cabin
-    bnez $v0, dns_check2    # se tem requests, pula cópia
-    
-    # copy deferred to active
+    lw $a0, 4($sp)
+    bnez $v0, dns_find_reqs
+
+    # Promove deferred_requests para active_requests
     li $t0, 0
 dns_copy_loop:
     bge $t0, 5, dns_check2
     sll $t1, $t0, 2
-    
-    addi $t2, $a0, 36       # deferred
+
+    addi $t2, $a0, 36
     add $t2, $t2, $t1
-    lw $t3, 0($t2)          # val = deferred[i]
-    sw $zero, 0($t2)        # deferred[i] = 0
-    
-    addi $t4, $a0, 16       # active
+    lw $t3, 0($t2)
+    sw $zero, 0($t2)
+
+    addi $t4, $a0, 16
     add $t4, $t4, $t1
-    sw $t3, 0($t4)          # active[i] = val
-    
+    sw $t3, 0($t4)
+
     addi $t0, $t0, 1
     j dns_copy_loop
 
@@ -284,7 +256,7 @@ dns_check2:
     jal has_requests
     lw $a0, 4($sp)
     bnez $v0, dns_find_reqs
-    sw $zero, 8($a0)        # state = ELEV_IDLE
+    sw $zero, 8($a0)        # state = IDLE
     j dns_end
 
 dns_find_reqs:
@@ -298,11 +270,11 @@ dns_find_loop:
     add $t3, $t3, $t4
     lw $t5, 0($t3)
     beqz $t5, dns_find_next
-    
+
     bne $t1, -1, dns_skip_low
-    move $t1, $t2           # lowest = i
+    move $t1, $t2
 dns_skip_low:
-    move $t0, $t2           # highest = i
+    move $t0, $t2
 dns_find_next:
     addi $t2, $t2, 1
     j dns_find_loop
@@ -311,6 +283,13 @@ dns_set_state:
     lw $t6, 4($a0)          # current_floor
     bgt $t0, $t6, dns_set_up
     blt $t1, $t6, dns_set_down
+
+    # Pedido ativo no proprio andar atual -> abre a porta
+    li $t7, 3
+    sw $t7, 8($a0)          # state = DOOR
+    jal get_millis
+    lw $a0, 4($sp)
+    sw $v0, 12($a0)
     j dns_end
 
 dns_set_up:
@@ -318,7 +297,7 @@ dns_set_up:
     sw $t7, 8($a0)          # state = UP
     jal get_millis
     lw $a0, 4($sp)
-    sw $v0, 12($a0)         # timer = millis()
+    sw $v0, 12($a0)
     j dns_end
 
 dns_set_down:
@@ -327,35 +306,32 @@ dns_set_down:
     jal get_millis
     lw $a0, 4($sp)
     sw $v0, 12($a0)
-    
+
 dns_end:
     lw $ra, 0($sp)
     addi $sp, $sp, 12
     jr $ra
 
-# ---------------------------------------------------------
 # void update_cabin(Cabin *cabin)
-# Argumento: $a0 = cabin
-# ---------------------------------------------------------
 update_cabin:
     addi $sp, $sp, -12
     sw $ra, 0($sp)
     sw $a0, 4($sp)
-    
+
     lw $t0, 8($a0)          # state
-    bne $t0, 3, uc_check_idle   # if state == DOOR
-    
+    bne $t0, 3, uc_check_idle
+
     jal get_millis
     lw $a0, 4($sp)
-    lw $t1, 12($a0)         # cabin->timer
-    sub $t2, $v0, $t1
-    blt $t2, 5000, uc_end   # if millis - timer < 5000
-    
+    lw $t1, 12($a0)
+    subu $t2, $v0, $t1
+    bltu $t2, 5000, uc_end
+
     lw $t3, 4($a0)          # current_floor
     sll $t4, $t3, 2
-    addi $t5, $a0, 16       # active_requests
+    addi $t5, $a0, 16
     add $t5, $t5, $t4
-    sw $zero, 0($t5)        # active[current] = false
+    sw $zero, 0($t5)        # active[current_floor] = 0
     jal determine_next_state
     j uc_end
 
@@ -365,36 +341,41 @@ uc_check_idle:
     j uc_end
 
 uc_check_move:
-    # UP(1) ou DOWN(2)
     jal get_millis
     lw $a0, 4($sp)
     lw $t1, 12($a0)
-    sub $t2, $v0, $t1
-    blt $t2, 2000, uc_end   # if millis - timer < 2000
-    
-    sw $v0, 12($a0)         # timer = millis()
-    
+    subu $t2, $v0, $t1
+    bltu $t2, 2000, uc_end
+
+    sw $v0, 12($a0)
+
     lw $t3, 4($a0)          # current_floor
     lw $t0, 8($a0)          # state
     beq $t0, 1, uc_inc
+
+    # state == 2 (DOWN)
+    blez $t3, uc_recalc
     addi $t3, $t3, -1
     j uc_save_floor
+
 uc_inc:
+    bge $t3, 4, uc_recalc
     addi $t3, $t3, 1
+
 uc_save_floor:
-    sw $t3, 4($a0)          # save current_floor
-    
-    lw $a0, 0($a0)          # id
-    move $a1, $t3           # floor
+    sw $t3, 4($a0)
+
+    lw $a0, 0($a0)
+    move $a1, $t3
     jal send_update_to_visor
-    
-    lw $a0, 4($sp)          # restore cabin
+
+    lw $a0, 4($sp)
     lw $t3, 4($a0)
     sll $t4, $t3, 2
     addi $t5, $a0, 16
     add $t5, $t5, $t4
-    lw $t6, 0($t5)          # active_requests[current_floor]
-    
+    lw $t6, 0($t5)
+
     beqz $t6, uc_check_empty
     li $t7, 3
     sw $t7, 8($a0)          # state = DOOR
@@ -402,12 +383,13 @@ uc_save_floor:
     lw $a0, 4($sp)
     sw $v0, 12($a0)
     j uc_end
-    
+
 uc_check_empty:
     addi $a0, $a0, 16
     jal has_requests
     lw $a0, 4($sp)
     bnez $v0, uc_end
+uc_recalc:
     jal determine_next_state
 
 uc_end:
@@ -415,29 +397,26 @@ uc_end:
     addi $sp, $sp, 12
     jr $ra
 
-# ---------------------------------------------------------
-# void scan_keypads() 
-# (Mock: Lê caracter do console para simular o Keypad)
-# ---------------------------------------------------------
+# void scan_keypads()
 scan_keypads:
     addi $sp, $sp, -4
     sw $ra, 0($sp)
-    
-    jal get_keypad_mock
-    move $t0, $v0           # key
 
-    blt $t0, '0', sk_end
-    bgt $t0, '4', sk_check2
+    jal get_keypad_mock
+    move $t0, $v0
+
+    blt $t0, 48, sk_end     # '0'
+    bgt $t0, 52, sk_check2  # '4'
     la $a0, cabin1
-    sub $a1, $t0, '0'
+    addi $a1, $t0, -48
     jal add_request
     j sk_end
-    
+
 sk_check2:
-    blt $t0, '5', sk_end
-    bgt $t0, '9', sk_end
+    blt $t0, 53, sk_end     # '5'
+    bgt $t0, 57, sk_end     # '9'
     la $a0, cabin2
-    sub $a1, $t0, '5'
+    addi $a1, $t0, -53
     jal add_request
 
 sk_end:
@@ -445,21 +424,17 @@ sk_end:
     addi $sp, $sp, 4
     jr $ra
 
-# ---------------------------------------------------------
 # void scan_analog_buttons()
-# (Mock: Lógica preservada chamando mock de digitalRead)
-# ---------------------------------------------------------
 scan_analog_buttons:
     addi $sp, $sp, -4
     sw $ra, 0($sp)
-    
+
     jal get_millis
     la $t0, last_read_analog
     lw $t1, 0($t0)
-    sub $t2, $v0, $t1
-    blt $t2, 150, sab_end
+    subu $t2, $v0, $t1
+    bltu $t2, 150, sab_end
 
-    # Chamada Mock p/ Pino 13
     li $a0, 13
     jal mock_digitalRead
     beqz $v0, sab_p12
@@ -474,7 +449,7 @@ sab_p12:
     li $a1, 1
     jal add_request
     j sab_update
-    
+
 sab_p11:
     li $a0, 11
     jal mock_digitalRead
@@ -487,11 +462,55 @@ sab_p11:
 sab_p10:
     li $a0, 10
     jal mock_digitalRead
-    beqz $v0, sab_end       # Cortando os ifs seguintes para economizar abstração, mas a lógica segue igual
+    beqz $v0, sab_p9
     la $a0, cabin1
     li $a1, 2
     jal add_request
     j sab_update
+
+sab_p9:
+    li $a0, 9
+    jal mock_digitalRead
+    beqz $v0, sab_p8
+    la $a0, cabin2
+    li $a1, 2
+    jal add_request
+    j sab_update
+
+sab_p8:
+    li $a0, 8
+    jal mock_digitalRead
+    beqz $v0, sab_p7
+    la $a0, cabin1
+    li $a1, 3
+    jal add_request
+    j sab_update
+
+sab_p7:
+    li $a0, 7
+    jal mock_digitalRead
+    beqz $v0, sab_p6
+    la $a0, cabin2
+    li $a1, 3
+    jal add_request
+    j sab_update
+
+sab_p6:
+    li $a0, 6
+    jal mock_digitalRead
+    beqz $v0, sab_p5
+    la $a0, cabin1
+    li $a1, 4
+    jal add_request
+    j sab_update
+
+sab_p5:
+    li $a0, 5
+    jal mock_digitalRead
+    beqz $v0, sab_end
+    la $a0, cabin2
+    li $a1, 4
+    jal add_request
 
 sab_update:
     jal get_millis
@@ -504,33 +523,26 @@ sab_end:
     jr $ra
 
 # ---------------------------------------------------------
-# ABSTRAÇÕES HARDWARE ARDUINO
+# ABSTRACOES DE HARDWARE (MARS)
 # ---------------------------------------------------------
-
-# get_millis(): Retorna milissegundos em $v0 usando Syscall 30
 get_millis:
     li $v0, 30
     syscall
-    move $v0, $a0           # Pega low bytes do tempo
+    move $v0, $a0
     jr $ra
 
-# ---------------------------------------------------------
-# get_keypad_mock(): Lê o teclado do PC pelo MMIO do MARS
-# ---------------------------------------------------------
+# Leitura nao-bloqueante via MMIO do MARS (Tools -> Keyboard and Display MMIO Simulator)
 get_keypad_mock:
-    lui $t0, 0xffff          # Carrega o endereço base do MMIO (0xffff0000)
-    lw $t1, 0($t0)           # Lê o registrador de controle do teclado
-    andi $t1, $t1, 1         # Isola o bit 0 (Ready bit)
-    beqz $t1, sem_tecla      # Se for 0, nenhuma tecla foi apertada
-    
-    lw $v0, 4($t0)           # Se for 1, lê a tecla pressionada no registrador de dados (0xffff0004)
-    jr $ra                   # Retorna com a tecla em $v0
-
-sem_tecla:
-    li $v0, 0                # Nenhuma tecla
+    lui $t0, 0xffff
+    lw $t1, 0($t0)          # Receiver control
+    andi $t1, $t1, 1
+    beqz $t1, gkm_none
+    lw $v0, 4($t0)          # Receiver data (ASCII)
+    jr $ra
+gkm_none:
+    li $v0, 0
     jr $ra
 
-# mock_digitalRead(pin): Retorna 0 (LOW)
 mock_digitalRead:
     li $v0, 0
     jr $ra
